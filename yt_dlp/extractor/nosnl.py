@@ -1,5 +1,12 @@
 from .common import InfoExtractor
-from ..utils import parse_duration, parse_iso8601, traverse_obj
+from ..utils import (
+    int_or_none,
+    mimetype2ext,
+    parse_duration,
+    parse_iso8601,
+    url_or_none,
+)
+from ..utils.traversal import traverse_obj
 
 
 class NOSNLArticleIE(InfoExtractor):
@@ -11,10 +18,9 @@ class NOSNLArticleIE(InfoExtractor):
             'info_dict': {
                 'id': '2440340',
                 'ext': 'mp4',
-                'description': 'md5:5f83185d902ac97af3af4bed7ece3db5',
                 'title': '\'We hebben een huis vol met scheuren\'',
-                'duration': 95.0,
-                'thumbnail': 'https://cdn.nos.nl/image/2022/08/12/887149/3840x2160a.jpg',
+                'duration': 95,
+                'thumbnail': r're:https://images\.cdn\.nos\.nl/.+\.webp',
             },
         }, {
             # more than 1 video
@@ -23,13 +29,13 @@ class NOSNLArticleIE(InfoExtractor):
                 'id': '2440409',
                 'title': 'Vannacht sliepen weer enkele honderden asielzoekers in Ter Apel buiten',
                 'description': 'md5:72b1e1674d798460e79d78fa37e9f56d',
-                'tags': ['aanmeldcentrum', 'Centraal Orgaan opvang asielzoekers', 'COA', 'asielzoekers', 'Ter Apel'],
+                'tags': ['aanmeldcentrum', 'Centraal Orgaan opvang asielzoekers', 'COA', 'Ter Apel'],
                 'modified_timestamp': 1660452773,
                 'modified_date': '20220814',
                 'upload_date': '20220813',
-                'thumbnail': 'https://cdn.nos.nl/image/2022/07/18/880346/1024x576a.jpg',
+                'thumbnail': r're:https://images\.cdn\.nos\.nl/.+\.webp',
                 'timestamp': 1660401384,
-                'categories': ['Regionaal nieuws', 'Binnenland'],
+                'categories': ['Binnenland', 'Regionaal nieuws'],
             },
             'playlist_count': 2,
         }, {
@@ -44,7 +50,7 @@ class NOSNLArticleIE(InfoExtractor):
                 'modified_timestamp': 1660625449,
                 'timestamp': 1660625449,
                 'upload_date': '20220816',
-                'thumbnail': 'https://cdn.nos.nl/image/2022/08/16/888178/1024x576a.jpg',
+                'thumbnail': r're:https://images\.cdn\.nos\.nl/.+\.webp',
                 'categories': ['Binnenland', 'Buitenland'],
             },
             'playlist_count': 2,
@@ -56,9 +62,9 @@ class NOSNLArticleIE(InfoExtractor):
                 'title': 'Xi en Trudeau botsen voor de camera op G20-top: \'Je hebt gelekt\'',
                 'modified_date': '20221117',
                 'description': 'md5:61907dac576f75c11bf8ffffd4a3cc0f',
-                'tags': ['Xi', 'Trudeau', 'G20', 'indonesié'],
+                'tags': ['Xi', 'Indonesië'],
                 'upload_date': '20221117',
-                'thumbnail': 'https://cdn.nos.nl/image/2022/11/17/916155/1024x576a.jpg',
+                'thumbnail': r're:https://images\.cdn\.nos\.nl/.+\.webp',
                 'modified_timestamp': 1668663388,
                 'timestamp': 1668663388,
                 'categories': ['Buitenland'],
@@ -94,11 +100,84 @@ class NOSNLArticleIE(InfoExtractor):
                     'ext': 'mp3',
                 }
 
+    def _extract_formats(self, asset, display_id):
+        formats, subtitles = [], {}
+        for fmt in traverse_obj(asset, ('formats', lambda _, v: url_or_none(v['url']))):
+            ext = mimetype2ext(fmt.get('mimetype'))
+            if ext == 'm3u8':
+                fmts, subs = self._extract_m3u8_formats_and_subtitles(
+                    fmt['url'], display_id, 'mp4', m3u8_id='hls', fatal=False)
+            elif ext == 'mpd':
+                fmts, subs = self._extract_mpd_formats_and_subtitles(
+                    fmt['url'], display_id, mpd_id='dash', fatal=False)
+            else:
+                fmts, subs = [{'url': fmt['url'], 'ext': ext}], {}
+            formats.extend(fmts)
+            self._merge_subtitles(subs, target=subtitles)
+        return formats, subtitles
+
+    @staticmethod
+    def _extract_thumbnails(image_asset):
+        return traverse_obj(image_asset, (
+            lambda k, _: k.startswith('Ratio'), lambda _, v: url_or_none(v['url']), {
+                'url': 'url',
+                'width': ('width', {int_or_none}),
+                'height': ('height', {int_or_none}),
+            }))
+
+    def _article_entries(self, elements, display_id):
+        for element in traverse_obj(elements, (..., {dict})):
+            typename = element.get('__typename')
+            if typename == 'VideoElement':
+                asset = element.get('videoAsset') or {}
+                formats, subtitles = self._extract_formats(asset, display_id)
+                yield {
+                    'id': str(traverse_obj(asset, ('videoItem', 'id'), 'id')),
+                    'formats': formats,
+                    'subtitles': subtitles,
+                    'thumbnails': self._extract_thumbnails(asset.get('imageAsset')),
+                    **traverse_obj(element, {
+                        'title': ('title', {str}),
+                        'description': ('description', {str}),
+                    }),
+                    'duration': int_or_none(asset.get('durationInSeconds')),
+                }
+            elif typename == 'AudioElement':
+                asset = element.get('asset') or {}
+                formats, subtitles = self._extract_formats(asset, display_id)
+                yield {
+                    'id': str(asset['id']),
+                    'formats': formats,
+                    'subtitles': subtitles,
+                    'vcodec': 'none',
+                    **traverse_obj(element, {
+                        'title': ('title', {str}),
+                        'description': ('description', {str}),
+                    }),
+                }
+            yield from self._article_entries(element.get('children'), display_id)
+
     def _real_extract(self, url):
         site_type, display_id = self._match_valid_url(url).group('type', 'display_id')
         webpage = self._download_webpage(url, display_id)
 
-        nextjs_json = self._search_nextjs_data(webpage, display_id)['props']['pageProps']['data']
+        page_props = self._search_nextjs_data(webpage, display_id)['props']['pageProps']
+        if article := page_props.get('article'):
+            return self.playlist_result(
+                self._article_entries(article.get('content'), display_id), str(article['id']),
+                article.get('title') or self._html_search_meta(['title', 'og:title', 'twitter:title'], webpage),
+                (article.get('description')
+                 or self._html_search_meta(['description', 'twitter:description', 'og:description'], webpage)),
+                thumbnail=(traverse_obj(article, ('indexImage', 'Ratio16x9', -1, 'url', {url_or_none}))
+                           or self._html_search_meta(['og:image', 'twitter:image'], webpage)),
+                **traverse_obj(article, {
+                    'tags': ('keywords', ..., 'label', {str}),
+                    'categories': ('categories', ..., 'label', {str}),
+                    'timestamp': ('createdAt', {parse_iso8601}),
+                    'modified_timestamp': ('modifiedAt', {parse_iso8601}),
+                }))
+
+        nextjs_json = page_props['data']
         return {
             '_type': 'playlist',
             'entries': self._entries(
