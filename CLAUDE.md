@@ -34,7 +34,7 @@ Run from the repo root. `hatch` is the project tool; if it is not installed, pre
 - New site: `class FooIE(InfoExtractor)` in `yt_dlp/extractor/foo.py`, then add the import to `extractor/_extractors.py` (alphabetical by module). Without that import it never loads.
 - `_VALID_URL` must have a `(?P<id>...)` group; get it with `self._match_id(url)`.
 - Mandatory fields: `id` (a `str`), `title`, and `url` or `formats`. Everything else must be non-fatal.
-- Download tests turn every `report_warning` into a failure, so optional lookups use `default=None` (silent), not `fatal=False` (warns).
+- Download tests turn every `report_warning` into a failure, so optional lookups pass `default=None` (silent). `fatal=False` warns, and so do `_html_search_meta(...)` and `_og_search_*(...)` without `default=None`, since they already default to `fatal=False`.
 - Every non-None field returned must appear in the test's `info_dict`; the failure output prints the missing ones to copy. Values can be literals, a type (`int`), `'md5:...'`, `'re:...'`, or `'count:N'`. URL-only tests use `'only_matching': True`.
 - Nested data: `traverse_obj(data, {'title': ('meta', 'title', {str}), 'duration': ('len', {int_or_none})})`, imported from `..utils.traversal`. Not `.get()` chains, `try_get`, or `dict_get`.
 - Lint rules that only apply under `yt_dlp/extractor/`: no `from re import ...` for stdlib modules (write `import urllib.parse`, `import datetime as dt`), no `print`. `compat_*` helpers are banned everywhere. No `# noqa`.
